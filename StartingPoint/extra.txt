@@ -1,0 +1,161 @@
+struct req {
+	int id;
+	int state;
+	pthread_mutex_t* lock;
+	pthread_cond_t* changed; 
+};
+
+struct queue {
+
+	req* head;
+	req* next;
+	req* tail;
+	char* name;
+	pthread_mutex_t* lock;
+	pthread_cond_t* wait;
+
+}bb_read,bb_write;
+
+/*
+* perform a standard removal from the queue 
+* returns int if removal was succesful
+*/
+
+int pop_queue(struct queue *q, req **r, int block){
+    pthread_mutex_lock(&q->lock);
+    while(q->head == NULL) {
+        if(block) {
+            pthread_cond_wait(&q->wait, &q->lock);
+        }
+        else {
+            pthread_mutex_unlock(&q->lock);
+            return FALSE;
+        }
+    }
+
+    req *got = q->head;
+    q->head = got->next;
+    got->next = NULL;
+    if(!q->head) {
+   //      just removed last element 
+        q->tail = q->head;
+    }
+
+    *r = got;
+    pthread_mutex_unlock(&q->lock);
+    return TRUE;
+}
+
+/*
+ * perform a standard linked list insertion to the queue specified
+ * handles all required locking and signals any listeners
+ * return: int - if insertion was successful
+ */
+/*
+int push_queue(struct queue *q, req *r){
+  
+  // push never blocks, 
+  
+    if(!r || !q)
+        return FALSE;
+
+    pthread_mutex_lock(&q->lock);
+
+    if(q->tail) {
+        q->tail->next = r;
+        q->tail = r;
+    }
+    else {
+        // was an empty queue 
+        q->tail = q->head = r;
+    }
+
+    pthread_mutex_unlock(&q->lock);
+    pthread_cond_signal(&q->wait);
+
+    return TRUE;
+}
+
+\*
+*
+*/
+
+void *request_handler(void *arg){
+    req *r;
+    queue *q = arg;
+    int writing = !strcmp(q->name, "write");
+    for(;;) {
+        
+         //wait for a request
+         
+        pop_queue(q, &r, TRUE);
+
+        
+         // handle request
+         // req r is unattached to any lists, but must lock it's properties incase being redeemed
+         
+        printf("Info: driver: (%s) handling req %d\n", q->name, r->id);
+        pthread_mutex_lock(&r->lock);
+
+        pthread_mutex_lock(&q->processing);
+        r->state = q->process(*device, &r->sd) +1;
+        pthread_mutex_unlock(&q->processing);
+
+         
+         // if writing, return the SectorDescriptor
+         
+         if (writing) {
+            printf("Info: driver (write thread) has released a sector descriptor.\n");
+            blocking_put_sd(*sd_store, r->sd);
+            r->sd = NULL;
+        }
+
+        pthread_mutex_unlock(&r->lock);
+        pthread_cond_signal(&r->changed);
+
+    }
+}
+
+void* thread_write();
+void* thread_read();
+
+/*
+ * the following call is used to retrieve the status of the read or write
+ * the return value is 1 if successful, 0 if not
+ * the calling application is blocked until the read/write has completed
+ * if a successful read, the associated SectorDescriptor is returned in sd
+ */
+
+int redeem_voucher(Voucher v, SectorDescriptor *sd){
+    int result = 0;
+    
+    if (v == NULL){
+        printf("Driver: null voucher redeemed!\n");
+        return 0;
+    }
+    
+    req *r = v;
+    pthread_mutex_lock(&r->lock);
+
+   // if state = 0 job still running/queued 
+    while(r->state==0) {
+        printf("Driver: blocking for req %d to finish\n", r->id);
+        pthread_cond_wait(&r->changed, &r->lock);
+    }
+
+    sd = &r->sd;
+    result = r->state-1;
+    r->sd = NULL;
+    r->state = WAIT;
+    //printf("Driver: req %d completed\n", r->id);
+    pthread_mutex_unlock(&r->lock);
+    
+    // return req to pool
+     
+    push_queue(&pool_q, r);
+    
+    pthread_mutex_destroy(&mutex);
+    pthread_cond_destroy(&cond);
+
+    return result;
+}

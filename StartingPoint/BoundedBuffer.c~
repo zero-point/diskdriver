@@ -1,0 +1,176 @@
+#include "BoundedBuffer.h" 
+
+#include <pthread.h> 
+
+#include <stdlib.h> 
+
+/* 
+
+ * some definitions to make the code easier to read 
+
+*/ 
+
+typedef int Boolean; 
+
+#define False (0) 
+
+#define True (!False) 
+
+typedef struct real_bounded_buffer { 
+
+	pthread_mutex_t lock; 
+
+	pthread_cond_t non_empty; 
+
+	pthread_cond_t non_full; 
+
+	unsigned int maxLength; 
+
+	unsigned int readP; 
+
+	unsigned int writeP; 
+
+	Boolean emptyF; 
+
+	BufferedItem *buffer; 
+
+} RealBoundedBuffer, *BBptr; 
+
+
+BoundedBuffer createBB(unsigned int length) { 
+
+	BBptr newBB = (BBptr)malloc(sizeof(RealBoundedBuffer)); 
+
+	newBB->buffer = (BufferedItem *)malloc(length*sizeof(BufferedItem)); 
+
+	newBB->maxLength = length; 
+
+	/* 
+
+	 * note that if readP == writeP, buffer could be full or empty 
+
+	 * we use emptyF to show which is true 
+
+*/ 
+
+	newBB->writeP = length - 1; 
+
+	newBB->readP = length - 1; 
+
+	newBB->emptyF = True; 
+
+	pthread_mutex_init(&newBB->lock, NULL); 
+
+	pthread_cond_init(&newBB->non_full, NULL); 
+
+	pthread_cond_init(&newBB->non_empty, NULL); 
+
+	return (BoundedBuffer)newBB; 
+
+}
+
+void destroyBB(BoundedBuffer);
+
+void blockingWriteBB(BoundedBuffer b, BufferedItem i) { 
+
+	BBptr theBB = (BBptr)b; 
+
+	pthread_mutex_lock(&theBB->lock); 
+
+	while ((theBB->writeP == theBB->readP) && (!theBB->emptyF)) 
+
+		pthread_cond_wait(&theBB->non_full, &theBB->lock); 
+
+	unsigned int n = (theBB->writeP +1) % theBB->maxLength; 
+
+	theBB->writeP = n; 
+
+	theBB->buffer[n] = i; 
+
+	theBB->emptyF = False; 
+
+	pthread_cond_signal(&theBB->non_empty); 
+
+	pthread_mutex_unlock(&theBB->lock); 
+
+}
+
+void nonblockingWriteBB(BoundedBuffer b, BufferedItem i) { 
+
+	BBptr theBB = (BBptr)b; 
+
+	pthread_mutex_lock(&theBB->lock); 
+
+	while ((theBB->writeP == theBB->readP) && (!theBB->emptyF)) 
+
+		pthread_cond_wait(&theBB->non_full, &theBB->lock); 
+
+	unsigned int n = (theBB->writeP +1) % theBB->maxLength; 
+
+	theBB->writeP = n; 
+
+	theBB->buffer[n] = i; 
+
+	theBB->emptyF = False; 
+
+	pthread_cond_signal(&theBB->non_empty); 
+
+	pthread_mutex_unlock(&theBB->lock); 
+
+}
+
+BufferedItem blockingReadBB(BoundedBuffer b) { 
+
+	BBptr theBB = (BBptr)b; 
+
+	BufferedItem value; 
+
+	pthread_mutex_lock(&theBB->lock); 
+
+	while (theBB->emptyF) 
+
+		pthread_cond_wait(&theBB->non_empty, &theBB->lock); 
+
+	unsigned int n = (theBB->readP + 1) % theBB->maxLength; 
+
+	theBB->readP = n; 
+
+	value = theBB->buffer[n]; 
+
+	theBB->emptyF = (theBB->readP == theBB->writeP) ? True : False; 
+
+	pthread_cond_signal(&theBB->non_full); 
+
+	pthread_mutex_unlock(&theBB->lock); 
+
+	return value; 
+
+}
+
+int nonblockingReadBB(BoundedBuffer, BufferedItem *) { 
+
+	BBptr theBB = (BBptr)b; 
+
+	BufferedItem value; 
+
+	pthread_mutex_lock(&theBB->lock); 
+
+	while (theBB->emptyF) 
+
+		pthread_cond_wait(&theBB->non_empty, &theBB->lock); 
+
+	unsigned int n = (theBB->readP + 1) % theBB->maxLength; 
+
+	theBB->readP = n; 
+
+	value = theBB->buffer[n]; 
+
+	theBB->emptyF = (theBB->readP == theBB->writeP) ? True : False; 
+
+	pthread_cond_signal(&theBB->non_full); 
+
+	pthread_mutex_unlock(&theBB->lock); 
+
+	return value; 
+
+}
